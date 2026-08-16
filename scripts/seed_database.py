@@ -29,13 +29,13 @@ async def seed_pokemon(session) -> int:
     with open(pokemon_file) as f:
         pokemon_data = json.load(f)
 
+    # BULK LOOKUP: Get all existing IDs at once
+    existing = (await session.execute(select(PokemonSpecies.national_dex))).scalars().all()
+    existing_set = set(existing)
+
     count = 0
     for poke in pokemon_data:
-        # Check if already exists
-        result = await session.execute(
-            select(PokemonSpecies).where(PokemonSpecies.national_dex == poke["national_dex"])
-        )
-        if result.scalar_one_or_none():
+        if poke["national_dex"] in existing_set:
             continue
 
         species = PokemonSpecies(
@@ -90,13 +90,13 @@ async def seed_moves(session) -> int:
     with open(moves_file) as f:
         moves_data = json.load(f)
 
+    # BULK LOOKUP
+    existing = (await session.execute(select(Move.id))).scalars().all()
+    existing_set = set(existing)
+
     count = 0
     for move_data in moves_data:
-        # Check if already exists
-        result = await session.execute(
-            select(Move).where(Move.id == move_data["id"])
-        )
-        if result.scalar_one_or_none():
+        if move_data["id"] in existing_set:
             continue
 
         move = Move(
@@ -132,15 +132,14 @@ async def seed_learnsets(session) -> int:
     with open(learnsets_file) as f:
         learnsets_data = json.load(f)
 
+    # BULK LOOKUP
+    existing = (await session.execute(select(PokemonLearnset.species_id).distinct())).scalars().all()
+    existing_set = set(existing)
+
     count = 0
     for entry in learnsets_data:
         species_id = entry["species_id"]
-
-        # Check if learnsets already exist for this species so we don't duplicate
-        result = await session.execute(
-            select(PokemonLearnset).where(PokemonLearnset.species_id == species_id).limit(1)
-        )
-        if result.scalar_one_or_none():
+        if species_id in existing_set:
             continue
 
         for move_data in entry.get("level_up_moves", []):
@@ -166,13 +165,13 @@ async def seed_items(session) -> int:
     with open(items_file) as f:
         items_data = json.load(f)
 
+    # BULK LOOKUP
+    existing = (await session.execute(select(Item.id))).scalars().all()
+    existing_set = set(existing)
+
     count = 0
     for item_data in items_data:
-        # Check if already exists
-        result = await session.execute(
-            select(Item).where(Item.id == item_data["id"])
-        )
-        if result.scalar_one_or_none():
+        if item_data["id"] in existing_set:
             continue
 
         item = Item(
