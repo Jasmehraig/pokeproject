@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from telemon.database import get_session_context, init_db
-from telemon.database.models import Item, Move, PokemonSpecies
+from telemon.database.models import Item, Move, PokemonSpecies, PokemonLearnset
 from telemon.logging import setup_logging, get_logger
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -122,6 +122,40 @@ async def seed_moves(session) -> int:
     return count
 
 
+async def seed_learnsets(session) -> int:
+    """Seed Pokemon level-up learnsets."""
+    learnsets_file = DATA_DIR / "learnsets.json"
+    if not learnsets_file.exists():
+        logger.warning("learnsets.json not found, skipping")
+        return 0
+
+    with open(learnsets_file) as f:
+        learnsets_data = json.load(f)
+
+    count = 0
+    for entry in learnsets_data:
+        species_id = entry["species_id"]
+
+        # Check if learnsets already exist for this species so we don't duplicate
+        result = await session.execute(
+            select(PokemonLearnset).where(PokemonLearnset.species_id == species_id).limit(1)
+        )
+        if result.scalar_one_or_none():
+            continue
+
+        for move_data in entry.get("level_up_moves", []):
+            learnset = PokemonLearnset(
+                species_id=species_id,
+                move_id=move_data["move_id"],
+                level=move_data["level"]
+            )
+            session.add(learnset)
+            count += 1
+
+    await session.commit()
+    return count
+
+
 async def seed_items(session) -> int:
     """Seed items data."""
     items_file = DATA_DIR / "items.json"
@@ -175,6 +209,10 @@ async def main():
         moves_count = await seed_moves(session)
         logger.info(f"Seeded {moves_count} moves")
 
+        # Seed Learnsets
+        learnsets_count = await seed_learnsets(session)
+        logger.info(f"Seeded {learnsets_count} learnset entries")
+
         # Seed Items
         items_count = await seed_items(session)
         logger.info(f"Seeded {items_count} items")
@@ -184,3 +222,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
