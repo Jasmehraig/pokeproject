@@ -19,12 +19,38 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 logger = get_logger(__name__)
 
 
-async def seed_pokemon(session) -> int:
-    """Seed Pokemon species data."""
-    pokemon_file = DATA_DIR / "pokemon.json"
-    if not pokemon_file.exists():
-        logger.warning("pokemon.json not found, skipping")
+async def seed_learnsets(session) -> int:
+    """Seed Pokemon level-up learnsets."""
+    learnsets_file = DATA_DIR / "learnsets.json"
+    if not learnsets_file.exists():
+        logger.warning("learnsets.json not found, skipping")
         return 0
+
+    with open(learnsets_file) as f:
+        learnsets_data = json.load(f)
+
+    # BULK LOOKUP
+    existing = (await session.execute(select(PokemonLearnset.species_id).distinct())).scalars().all()
+    existing_set = set(existing)
+
+    count = 0
+    for entry in learnsets_data:
+        species_id = entry["species_id"]
+        if species_id in existing_set:
+            continue
+
+        for move_data in entry.get("level_up_moves", []):
+            learnset = PokemonLearnset(
+                species_id=species_id,
+                move_id=move_data["move_id"],
+                learn_method="level-up",          # Added missing primary key
+                level_learned=move_data["level"]  # Fixed column name
+            )
+            session.add(learnset)
+            count += 1
+
+    await session.commit()
+    return count
 
     with open(pokemon_file) as f:
         pokemon_data = json.load(f)
