@@ -243,63 +243,73 @@ async def cmd_shopinfo(message: Message) -> None:
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
-    """Handle /buy command - buy items by ID."""
+    """Handle /buy command - buy items by Name or ID."""
     if not message.text:
         return
 
     args = message.text.split()
     if len(args) < 2:
         await message.answer(
-            "Please specify an item ID to buy!\n"
-            "Usage: /buy [item_id] [quantity]\n"
-            "Example: /buy 201 5 (buy 5 Rare Candies)\n\n"
-            "Use /shop to see item IDs."
+            "Please specify an item to buy!\n"
+            "Usage: /buy [item_name_or_id] [quantity]\n"
+            "Example: /buy rare candy 5\n"
+            "Example: /buy 101 5\n\n"
+            "Use /shop to see items."
         )
         return
 
-    # Parse item ID
-    try:
-        item_id = int(args[1])
-    except ValueError:
-        await message.answer(
-            "Invalid item ID! Use a number.\n"
-            "Example: /buy 201 5\n\n"
-            "Use /shop to see item IDs."
-        )
-        return
-
-    # Parse quantity (default 1)
+    # Parse quantity and item query
     quantity = 1
-    if len(args) >= 3:
-        try:
-            quantity = int(args[2])
-            if quantity < 1:
-                await message.answer("Quantity must be at least 1!")
-                return
-            if quantity > 99:
-                await message.answer("Maximum quantity per purchase is 99!")
-                return
-        except ValueError:
-            await message.answer("Invalid quantity! Use a number.")
-            return
+    if args[-1].isdigit() and len(args) > 2:
+        quantity = int(args[-1])
+        item_query = " ".join(args[1:-1]).lower()
+    elif args[-1].isdigit() and len(args) == 2:
+        item_query = args[1].lower()
+    else:
+        item_query = " ".join(args[1:]).lower()
 
-    # Get the item from database
-    result = await session.execute(
-        select(Item).where(Item.id == item_id).where(Item.is_purchasable == True)
-    )
-    item = result.scalar_one_or_none()
+    if quantity < 1 or quantity > 99:
+        await message.answer("Quantity must be between 1 and 99!")
+        return
+
+    # Bridge the hardcoded menu IDs to the actual Database names
+    target_name = None
+    if item_query.isdigit():
+        fake_id = int(item_query)
+        if fake_id in ITEM_BY_ID:
+            target_name = ITEM_BY_ID[fake_id]["name"].lower()
+    else:
+        if item_query in ITEM_BY_NAME:
+            target_name = ITEM_BY_NAME[item_query]["name"].lower()
+        else:
+            target_name = item_query
+
+    # Find the item in the database
+    item = None
+    if target_name:
+        result = await session.execute(select(Item).where(Item.name_lower == target_name))
+        item = result.scalar_one_or_none()
+        
+        # Fallback: PokeAPI sometimes uses hyphens
+        if not item:
+            result = await session.execute(select(Item).where(Item.name_lower == target_name.replace(" ", "-")))
+            item = result.scalar_one_or_none()
+
+    # Fallback to pure DB ID if the name trick failed
+    if not item and item_query.isdigit():
+        result = await session.execute(select(Item).where(Item.id == int(item_query)))
+        item = result.scalar_one_or_none()
 
     if not item:
         await message.answer(
-            f"Item with ID {item_id} not found in the shop!\n"
-            "Use /shop to see available items."
+            f"Item '{item_query}' not found!\n"
+            "Make sure you spelled it correctly or used the correct ID from the /shop."
         )
         return
 
     total_cost = item.cost * quantity
 
-    # Atomic balance deduction — prevents race conditions where two concurrent
-    # /buy commands both see sufficient balance and double-spend.
+    # Atomic balance deduction
     result = await session.execute(
         update(User)
         .where(User.telegram_id == user.telegram_id)
@@ -310,20 +320,19 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     if result.rowcount == 0:
         await message.answer(
             f"Not enough {CURRENCY_SHORT}!\n\n"
-            f"Item: {item.name} (ID: {item.id})\n"
+            f"Item: {item.name}\n"
             f"Price: {item.cost:,} {CURRENCY_SHORT} x {quantity} = {total_cost:,} {CURRENCY_SHORT}\n"
             f"Your balance: {user.balance:,} {CURRENCY_SHORT}"
         )
         return
 
-    # Refresh the user object so balance is up-to-date for the response
     await session.refresh(user)
 
-    # Add to inventory (atomic upsert)
+    # Add to inventory
     inv_result = await session.execute(
         select(InventoryItem)
         .where(InventoryItem.user_id == user.telegram_id)
-        .where(InventoryItem.item_id == item_id)
+        .where(InventoryItem.item_id == item.id)
     )
     inventory_item = inv_result.scalar_one_or_none()
 
@@ -332,7 +341,7 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     else:
         inventory_item = InventoryItem(
             user_id=user.telegram_id,
-            item_id=item_id,
+            item_id=item.id,
             quantity=quantity,
         )
         session.add(inventory_item)
@@ -342,7 +351,7 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     logger.info(
         "User purchased item",
         user_id=user.telegram_id,
-        item_id=item_id,
+        item_id=item.id,
         item_name=item.name,
         quantity=quantity,
         cost=total_cost,
@@ -355,7 +364,6 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
         f"Remaining balance: {user.balance:,} {CURRENCY_SHORT}\n\n"
         f"<i>Use /inventory to see your items.</i>"
     )
-
 
 @router.message(Command("inventory", "bag"))
 async def cmd_inventory(message: Message, session: AsyncSession, user: User) -> None:
