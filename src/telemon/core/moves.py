@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from telemon.core import forms, regional
 from telemon.database.models import Pokemon
@@ -130,6 +131,7 @@ async def auto_learn_moves_on_levelup(
 
     if learned:
         pokemon.moves = current_moves
+        flag_modified(pokemon, "moves")
         # No commit here — caller handles it
 
     return learned
@@ -182,6 +184,7 @@ async def assign_starter_moves(
 
     move_names = [entry["move"].name_lower for entry in best]
     pokemon.moves = move_names
+    flag_modified(pokemon, "moves")
 
     return [entry["move"].name for entry in best]
 
@@ -224,6 +227,7 @@ async def learn_move(
     if len(current_moves) < MAX_MOVES:
         current_moves.append(move.name_lower)
         pokemon.moves = current_moves
+        flag_modified(pokemon, "moves")
         return True, f"{esc(pokemon.display_name)} learned {move.name}!"
     else:
         return False, (
@@ -266,5 +270,7 @@ async def forget_move(
 
     current_moves.pop(found_idx)
     pokemon.moves = current_moves
+    flag_modified(pokemon, "moves")
 
     return True, f"{esc(pokemon.display_name)} forgot {found_name}!"
+    
