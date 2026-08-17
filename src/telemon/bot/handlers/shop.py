@@ -272,44 +272,44 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
         await message.answer("Quantity must be between 1 and 99!")
         return
 
-    # Bridge the hardcoded menu IDs to the actual Database names
-    target_name = None
+    # 1. Look up the item strictly in the bot's hardcoded catalog (Bypassing the PokeAPI DB mismatch)
+    target_item_data = None
     if item_query.isdigit():
-        fake_id = int(item_query)
-        if fake_id in ITEM_BY_ID:
-            target_name = ITEM_BY_ID[fake_id]["name"].lower()
+        target_item_data = ITEM_BY_ID.get(int(item_query))
     else:
-        if item_query in ITEM_BY_NAME:
-            target_name = ITEM_BY_NAME[item_query]["name"].lower()
-        else:
-            target_name = item_query
+        target_item_data = ITEM_BY_NAME.get(item_query)
 
-    # Find the item in the database
-    item = None
-    if target_name:
-        result = await session.execute(select(Item).where(Item.name_lower == target_name))
-        item = result.scalar_one_or_none()
-        
-        # Fallback: PokeAPI sometimes uses hyphens
-        if not item:
-            result = await session.execute(select(Item).where(Item.name_lower == target_name.replace(" ", "-")))
-            item = result.scalar_one_or_none()
-
-    # Fallback to pure DB ID if the name trick failed
-    if not item and item_query.isdigit():
-        result = await session.execute(select(Item).where(Item.id == int(item_query)))
-        item = result.scalar_one_or_none()
-
-    if not item:
+    if not target_item_data:
         await message.answer(
             f"Item '{item_query}' not found!\n"
             "Make sure you spelled it correctly or used the correct ID from the /shop."
         )
         return
 
-    total_cost = item.cost * quantity
+    item_id = target_item_data["id"]
+    item_name = target_item_data["name"]
+    item_cost = target_item_data.get("cost", 0)
 
-    # Atomic balance deduction
+    # 2. Self-Healing: Ensure the item exists in the Database so your inventory doesn't break
+    result = await session.execute(select(Item).where(Item.id == item_id))
+    db_item = result.scalar_one_or_none()
+
+    if not db_item:
+        # Create it dynamically!
+        db_item = Item(
+            id=item_id,
+            name=item_name,
+            name_lower=item_name.lower(),
+            category=target_item_data.get("category", "utility"),
+            cost=item_cost,
+            description=target_item_data.get("description", "")
+        )
+        session.add(db_item)
+        await session.flush()  # Push to DB so we can reference its ID
+
+    total_cost = item_cost * quantity
+
+    # 3. Atomic balance deduction
     result = await session.execute(
         update(User)
         .where(User.telegram_id == user.telegram_id)
@@ -320,19 +320,19 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     if result.rowcount == 0:
         await message.answer(
             f"Not enough {CURRENCY_SHORT}!\n\n"
-            f"Item: {item.name}\n"
-            f"Price: {item.cost:,} {CURRENCY_SHORT} x {quantity} = {total_cost:,} {CURRENCY_SHORT}\n"
+            f"Item: {item_name}\n"
+            f"Price: {item_cost:,} {CURRENCY_SHORT} x {quantity} = {total_cost:,} {CURRENCY_SHORT}\n"
             f"Your balance: {user.balance:,} {CURRENCY_SHORT}"
         )
         return
 
     await session.refresh(user)
 
-    # Add to inventory
+    # 4. Add to inventory
     inv_result = await session.execute(
         select(InventoryItem)
         .where(InventoryItem.user_id == user.telegram_id)
-        .where(InventoryItem.item_id == item.id)
+        .where(InventoryItem.item_id == item_id)
     )
     inventory_item = inv_result.scalar_one_or_none()
 
@@ -341,7 +341,7 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     else:
         inventory_item = InventoryItem(
             user_id=user.telegram_id,
-            item_id=item.id,
+            item_id=item_id,
             quantity=quantity,
         )
         session.add(inventory_item)
@@ -351,15 +351,15 @@ async def cmd_buy(message: Message, session: AsyncSession, user: User) -> None:
     logger.info(
         "User purchased item",
         user_id=user.telegram_id,
-        item_id=item.id,
-        item_name=item.name,
+        item_id=item_id,
+        item_name=item_name,
         quantity=quantity,
         cost=total_cost,
     )
 
     await message.answer(
         f"<b>Purchase Successful!</b>\n\n"
-        f"Bought: {item.name} x{quantity}\n"
+        f"Bought: {item_name} x{quantity}\n"
         f"Cost: {total_cost:,} {CURRENCY_SHORT}\n"
         f"Remaining balance: {user.balance:,} {CURRENCY_SHORT}\n\n"
         f"<i>Use /inventory to see your items.</i>"
